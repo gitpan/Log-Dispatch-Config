@@ -1,8 +1,13 @@
 Revision history for Perl extension Log::Dispatch::Config.
 
+0.08  Sat Dec 22 15:58:20 JST 2001
+	- Added dependency on File::Temp in Makefile.PL
+	  (Thanks to Matt Sergeant <matt@sergeant.org>)
+	- Workaround against broken base.pm
+
 0.07  Wed Dec 19 01:46:00 JST 2001
 	- forgot to update MANIFEST
-	* Add $Log::Dispatch::Config::CallerDepth variable
+	* Added $Log::Dispatch::Config::CallerDepth variable
 	  Call caller() function only when necessary
 	  (Thanks to Matt Sergeant <matt@sergeant.org>)
 

@@ -2,9 +2,9 @@ package Log::Dispatch::Config;
 
 use strict;
 use vars qw($VERSION);
-$VERSION = '0.07';
+$VERSION = '0.08';
 
-require Log::Dispatch;
+use Log::Dispatch;
 use base qw(Log::Dispatch);
 use fields qw(config ctime);
 

@@ -21,5 +21,6 @@ WriteMakefile(
 	Log::Dispatch => 1.79,
 	AppConfig => 1.52,
 	IO::Scalar => 0,
+	File::Temp => 0.12,
     },
 );
