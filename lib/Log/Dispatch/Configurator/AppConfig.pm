@@ -28,7 +28,7 @@ sub _config { $_[0]->{_config} }
 sub get_attrs_global {
     my $self = shift;
     return {
-	'format'    => scalar $self->_config->get('format'),
+	format      => scalar $self->_config->get('format'),
 	dispatchers => [ split /\s+/, $self->_config->get('dispatchers') ],
     };
 }
