@@ -1,5 +1,5 @@
 use strict;
-use Test::More tests => 5;
+use Test::More tests => 3;
 
 use Log::Dispatch::Config;
 use FileHandle;
@@ -10,7 +10,7 @@ use IO::Scalar;
 my($fh, $file) = tempfile;
 copy("t/foo.cfg", $file);
 
-Log::Dispatch::Config->configure_and_watch($file);
+Log::Dispatch::Config->configure($file);
 
 {
     my $disp = Log::Dispatch::Config->instance;
@@ -19,13 +19,9 @@ Log::Dispatch::Config->configure_and_watch($file);
     sleep 1;
 
     copy("t/bar.cfg", $file);
-
     local $^W;
+    Log::Dispatch::Config->reload;
     my $disp2 = Log::Dispatch::Config->instance;
     isa_ok $disp2->{outputs}->{bar}, 'Log::Dispatch::File';
-    is $disp2->{outputs}->{foo}, undef;
-    isnt "$disp", "$disp2", "$disp - $disp2";
-
-    my $disp3 = Log::Dispatch::Config->instance;
-    is "$disp2", "$disp3", 'same one';
+    isnt "$disp", "$disp2", "same: $disp - $disp2";
 }
