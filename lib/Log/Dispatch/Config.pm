@@ -2,20 +2,25 @@ package Log::Dispatch::Config;
 
 use strict;
 use vars qw($VERSION);
-$VERSION = '0.05';
+$VERSION = '0.06';
 
-use AppConfig qw(:argcount);
+require Log::Dispatch;
 use base qw(Log::Dispatch);
-use fields qw(filename ctime);
-
-use vars qw($_Instance);
+use fields qw(config ctime);
 
 sub configure {
-    my($class, $file) = @_;
-    die "no config file supplied" unless $file;
+    my($class, $config) = @_;
+    die "no config file or configurator supplied" unless $config;
 
-    # now keep $file as an instance, later we should make object
-    $_Instance = $file;
+    # default configurator: AppConfig
+    unless (UNIVERSAL::isa($config, 'Log::Dispatch::Configurator')) {
+	require Log::Dispatch::Configurator::AppConfig;
+	$config = Log::Dispatch::Configurator::AppConfig->new($config);
+    }
+
+    no strict 'refs';
+    my $instance = "$class\::_instance";
+    $$instance = $config;
 }
 
 # backward compatibility
@@ -25,46 +30,56 @@ sub Log::Dispatch::instance {
 
 sub instance {
     my $class = shift;
-    unless (defined $_Instance) {
+
+    no strict 'refs';
+    my $instance = "$class\::_instance";
+    unless (defined $$instance) {
 	require Carp;
 	Carp::croak("Log::Dispatch::Config->configure not yet called.");
     }
 
-    # first time call: $_Instance is a filename
-    if (! ref $_Instance) {
-	$_Instance = $class->_create_instance($_Instance);
+    if (UNIVERSAL::isa($$instance, 'Log::Dispatch::Config')) {
+        # reload singleton on the fly
+	if ($$instance->needs_reload) {
+	    $$instance = $$instance->reload;
+	}
     }
-    # reload singleton on the fly
-    elsif ($_Instance->{ctime} <= (stat($_Instance->{filename}))[9]) {
-	$_Instance = $class->_create_instance($_Instance->{filename});
+    else {
+        # first time call: $_instance is L::D::Configurator::*
+	$$instance = $class->create_instance($$instance);
     }
-
-    return $_Instance;
+    return $$instance;
 }
 
-sub _create_instance {
-    my($class, $file) = @_;
+sub needs_reload {
+    my $self = shift;
+    return $self->{config}->needs_reload($self);
+}
 
-    my $config = AppConfig->new({
-	CREATE => 1,
-	GLOBAL => {
-	    ARGCOUNT => ARGCOUNT_ONE,
-	},
-    });
-    $config->define(dispatchers => { DEFAULT => '' });
-    $config->define(format      => { DEFAULT => undef });
-    $config->file($file);
+sub reload {
+    my $self = shift;
+    my $class = ref $self;
+    return $class->create_instance($self->{config}->reload);
+}
 
-    my $callback = $class->format_to_cb($config->get('format'), 3);
-    my %dispatchers = $class->config_dispatchers($config);
+sub create_instance {
+    my($class, $config) = @_;
 
+    my $global = $config->get_attrs_global;
+    my $callback = $class->format_to_cb($global->{format}, 3);
+    my %dispatchers;
+    foreach my $disp (@{$global->{dispatchers}}) {
+        $dispatchers{$disp} = $class->config_dispatcher(
+                $disp, $config->get_attrs($disp),
+	    );
+    }
     my %args;
     $args{callbacks} = $callback if defined $callback;
-    $_Instance = $class->new(%args);
+    my $instance = $class->new(%args);
 
     for my $dispname (keys %dispatchers) {
 	my $logclass = delete $dispatchers{$dispname}->{class};
-	$_Instance->add(
+	$instance->add(
 	    $logclass->new(
 		name => $dispname,
 		%{$dispatchers{$dispname}},
@@ -73,59 +88,65 @@ sub _create_instance {
     }
 
     # config info
-    $_Instance->{filename}  = $file;
-    $_Instance->{ctime} = time;
+    $instance->{config} = $config;
+    $instance->{ctime} = time;
 
-    return $_Instance;
+    return $instance;
 }
 
-sub config_dispatchers {
-    my($class, $config) = @_;
-    my %dispatchers;
-    for my $disp (split /\s+/, $config->get('dispatchers')) {
-	my %var = $config->varlist("^$disp\.");
-	my %param = map {
-	    (my $key = $_) =~ s/^$disp\.//;
-	    $key => $var{$_};
-	} keys %var;
+sub config_dispatcher {
+    my($class, $disp, $var) = @_;
 
-	my $dispclass = $param{class}
-	    or die "class param missing for $disp";
+    my $dispclass = $var->{class}
+        or die "class param missing for $disp";
 
-	eval qq{require $dispclass};
-	die $@ if $@ && $@ !~ /locate/;
+    eval qq{require $dispclass};
+    die $@ if $@ && $@ !~ /locate/;
 
-	if (exists $param{format}) {
-	    $param{callbacks} = $class->format_to_cb(delete $param{format}, 5);
-	}
-	$dispatchers{$disp} = \%param;
+    if (exists $var->{format}) {
+        $var->{callbacks} = $class->format_to_cb(delete $var->{format}, 5);
     }
-    return %dispatchers;
+    return $var;
 }
+
+my %syn = (
+    p => 'level',
+    m => 'message',
+    F => 'filename',
+    L => 'line',
+    P => 'package',
+);
 
 sub format_to_cb {
     my($class, $format, $stack) = @_;
     return undef unless defined $format;
 
-    my %syn = (
-	d => 'datetime',
-	p => 'level',
-	m => 'message',
-	F => 'filename',
-	L => 'line',
-	P => 'package',
-    );
-    $format =~ s/%([dpmFLP])/\$\{$syn{$1}\}/g;
-    $format =~ s/%n/\n/g;
-
     return sub {
 	my %p = @_;
 	@p{qw(package filename line)} = caller($stack);
-	$p{datetime} = scalar localtime;
+
 	my $log = $format;
-	$log =~ s/\$\{(.+?)\}/$p{$1}/g;
+	$log =~ s/%n/\n/g;
+	$log =~ s/%d(?:{(.*?)})?/$1 ? _strftime($1) : scalar localtime/eg;
+	$log =~ s/%([pmFLP])/$p{$syn{$1}}/g;
+
 	return $log;
     };
+}
+
+{
+    use vars qw($HasTimePiece);
+    BEGIN { eval { require Time::Piece; $HasTimePiece = 1 }; }
+
+    sub _strftime {
+	my $fmt = shift;
+	if ($HasTimePiece) {
+	    return Time::Piece->new->strftime($fmt);
+	} else {
+	    require POSIX;
+	    return POSIX::strftime($fmt, localtime);
+	}
+    }
 }
 
 1;
@@ -142,15 +163,21 @@ Log::Dispatch::Config - Log4j for Perl
 
   my $dispatcher = Log::Dispatch::Config->instance;
 
-  # or the same (may be deprecated)
+  # or the same
   my $dispatcher = Log::Dispatch->instance;
+
+  # or if you write your own config parser:
+  use Log::Dispatch::Configurator::XMLSimple;
+
+  my $config = Log::Dispatch::Configurator::XMLSimple->new('log.xml');
+  Log::Dispatch::Config->configure($config);
 
 =head1 DESCRIPTION
 
 Log::Dispatch::Config is a subclass of Log::Dispatch and provides a
-way to configure Log::Dispatch object with configulation file (in
-AppConfig format). I mean, this is log4j for Perl, not with all API
-compatibility though.
+way to configure Log::Dispatch object with configulation file
+(default, in AppConfig format). I mean, this is log4j for Perl, not
+with all API compatibility though.
 
 =head1 METHOD
 
@@ -190,8 +217,10 @@ Here is an example of the config file:
   screen.stderr = 1
   screen.format = %m
 
-Config file is parsed with AppConfig module, see L<AppConfig> when you
-face configuration parsing error.
+In this example, config file is written in AppConfig format. See
+L<Log::Dispatch::Configurator::AppConfig> for details.
+
+See L</"PLUGGABLE CONFIGURATOR"> for other config parsing scheme.
 
 =head2 GLOBAL PARAMETERS
 
@@ -207,18 +236,25 @@ If this parameter is unset, no logging is done.
 =item format
 
   format = [%d] [%p] %m at %F line %L%n
-  format = [${datetime}] [${prioity}] ${message} at ${filename} line ${line}\n
 
-C<format> defines log format. C<%X> style and C<${XXX}> style are both
-supported. Possible conversions format are
+C<format> defines log format. Possible conversions format are
 
-  %d ${datetime}	datetime string
-  %p ${priority}	priority (debug, info, warning ...)
-  %m ${message}		message string
-  %F ${filename}	filename
-  %L ${line}		line number
-  %P ${package}		package
-  %n 			newline (\n)
+  %d	datetime string (ctime(3))
+  %p	priority (debug, info, warning ...)
+  %m	message string
+  %F	filename
+  %L	line number
+  %P	package
+  %n    newline (\n)
+
+Note that datetime (%d) format is configurable by passing C<strftime>
+fmt in braket after %d. (I know it looks quite messy, but its
+compatible with Java Log4j ;)
+
+  format = [%d{%Y%m%d}] %m  # datetime is now strftime "%Y%m%d"
+
+If you have Time::Piece, this module uses its C<strftime>
+implementation, otherwise POSIX.
 
 C<format> defined here would apply to all the log messages to
 dispatchers. This parameter is B<optional>.
@@ -230,6 +266,14 @@ dispatchers. This parameter is B<optional>.
 Parameters for each dispatcher should be prefixed with "name.", where
 "name" is the name of each one, defined in global C<dispatchers>
 parameter.
+
+You can also use C<.ini> style grouping like:
+
+  [foo]
+  class = Log::Dispatch::File
+  min_level = debug
+
+See L<Log::Dispatch::Configurator::AppConfig> for details.
 
 =over 4
 
@@ -275,6 +319,118 @@ instance is not so useful. Log::Dispatch::Config defines C<instance>
 method so that the object reloads itself when configuration file is
 modified since its last object creation time.
 
+=head1 PLUGGABLE CONFIGURATOR
+
+If you pass filename to C<configure> method call, this module handles
+the config file with AppConfig. You can change config parsing scheme
+by passing another pluggable configurator object.
+
+Here is a way to declare new configurator class. The example below is
+hardwired version equivalent to the one above in L</"CONFIGURATION">.
+
+=over 4
+
+=item *
+
+Inherit from Log::Dispatch::Configurator. Stub C<new> constructor is
+inherited, but you can roll your own with it.
+
+  package Log::Dispatch::Configurator::Hardwired;
+  use base qw(Log::Dispatch::Configurator);
+
+  sub new {
+      bless {}, shift;
+  }
+
+=item *
+
+Implement two required object methods C<get_attrs_global> and
+C<get_attrs>.
+
+C<get_attrs_global> should return hash reference of global parameters.
+C<dispatchers> should be an array reference of names of dispatchers.
+
+  sub get_attrs_global {
+      my $self = shift;
+      return {
+          'format' => undef,
+          dispatchers => [ qw(file screen) ],
+      };
+  }
+
+C<get_attes> accepts name of a dispatcher and should return hash
+reference of parameters associated with the dispatcher.
+
+  sub get_attrs {
+      my($self, $name) = @_;
+      if ($name eq 'file') {
+          return {
+              class     => 'Log::Dispatch::File',
+              min_level => 'debug',
+              filename  => '/path/to/log',
+              mode      => 'append',
+              'format'  => '[%d] [%p] %m at %F line %L%n',
+          };
+      }
+      elsif ($name eq 'screen') {
+          return {
+	      class     => 'Log::Dispatch::Screen',
+	      min_level => 'info',
+	      stderr    => 1,
+	      'format'  => '%m',
+	  };
+      }
+      else {
+	  die "invalid dispatcher name: $name";
+      }
+  }
+
+=item *
+
+Implement optional C<needs_reload> and C<reload>
+methods. C<needs_reload> accepts Log::Dispatch::Config instance and
+should return boolean value if the object is stale and needs reloading
+itself.
+
+Stub config file mtime based C<needs_reload> method is declared in
+Log::Dispatch::Configurator as below, so if your config class is based
+on filesystem files, you do not need to reimplement this.
+
+  sub needs_reload {
+      my($self, $obj) = @_;
+      return $obj->{ctime} < (stat($self->{file}))[9];
+  }
+
+If you do not need I<singleton-ness>, always return true.
+
+  sub needs_reload { 1 }
+
+C<reload> method is called when C<needs_reload> returns true, and
+should return new Configurator instance. Typically you should place
+configuration parsing again on this method, so
+Log::Dispatch::Configurator again declares stub C<reload> method that
+clones your object.
+
+  sub reload {
+      my $self = shift;
+      my $class = ref $self;
+      return $class->new($self->{file});
+  }
+
+=item *
+
+That's all. Now you can plug your own configurator (Hardwired) into
+Log::Dispatch::Config. What you should do is to pass configurator
+object to C<configure> method call instead of config file name.
+
+  use Log::Dispatch;
+  use Log::Dispatch::Configurator::Hardwired;
+
+  my $config = Log::Dispatch::Configurator::Hardwired->new;
+  Log::Dispatch::Config->configure($config);
+
+=back
+
 =head1 TODO
 
 =over 4
@@ -287,13 +443,14 @@ LogLevel configuration depending on caller package like log4j?
 
 =head1 AUTHOR
 
-Tatsuhiko Miyagawa E<lt>miyagawa@bulknews.netE<gt>
+Tatsuhiko Miyagawa E<lt>miyagawa@bulknews.netE<gt> with much help from
+Matt Sergeant E<lt>matt@sergeant.orgE<gt>.
 
 This library is free software; you can redistribute it and/or modify
 it under the same terms as Perl itself.
 
 =head1 SEE ALSO
 
-L<Log::Dispatch>, L<AppConfig>
+L<Log::Dispatch::Configurator::AppConfig>, L<Log::Dispatch>, L<AppConfig>
 
 =cut
