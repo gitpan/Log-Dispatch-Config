@@ -2,7 +2,7 @@ package Log::Dispatch::Configurator;
 
 use strict;
 use vars qw($VERSION);
-$VERSION = 0.12;
+$VERSION = '1.00';
 
 sub new {
     my($class, $file) = @_;
@@ -53,7 +53,7 @@ Log::Dispatch::Configurator - Abstract Configurator class
   sub get_attrs        { }
 
   # optional
-  sub parse        { }
+  sub reload       { }
   sub needs_reload { }
 
 =head1 DESCRIPTION
