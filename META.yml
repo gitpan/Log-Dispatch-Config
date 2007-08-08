@@ -1,0 +1,15 @@
+# http://module-build.sourceforge.net/META-spec.html
+#XXXXXXX This is a prototype!!!  It will change in the future!!! XXXXX#
+name:         Log-Dispatch-Config
+version:      1.02
+version_from: lib/Log/Dispatch/Config.pm
+installdirs:  site
+requires:
+    AppConfig:                     1.52
+    File::Temp:                    0.12
+    IO::Scalar:                    0
+    Log::Dispatch:                 2
+    Test::More:                    0.32
+
+distribution_type: module
+generated_by: ExtUtils::MakeMaker version 6.30
