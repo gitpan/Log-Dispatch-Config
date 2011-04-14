@@ -28,4 +28,5 @@ t/foo.cfg
 t/log.cfg
 t/log.ini
 t/section.ini
-META.yml                                 Module meta-data (added by MakeMaker)
+META.yml                                 Module YAML meta-data (added by MakeMaker)
+META.json                                Module JSON meta-data (added by MakeMaker)
